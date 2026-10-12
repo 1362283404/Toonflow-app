@@ -1,6 +1,6 @@
 <template>
   <panel class="canvasMenuPanel" position="top-left">
-    <el-card class="canvasMenu" shadow="never" :bodyStyle="{ padding: '5px 10px' }">
+    <el-card class="canvasMenu" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
       <div class="menuContent">
         <el-input v-model="projectNameDraft" class="workspaceNameInput" :style="{ '--workspaceName': JSON.stringify(projectNameDraft || ' ') }" size="small" :title="directory" :disabled="!workspaceStore.project" aria-label="项目名称"
           @keydown.stop @keydown.enter="saveProjectName" @keydown.esc.prevent="projectNameDraft = workspaceName" @blur="saveProjectName" />
@@ -8,7 +8,7 @@
         <el-popover v-model:visible="canvasListVisible" trigger="click" placement="bottom-start" :width="320" :showArrow="false" :disabled="!directory">
           <template #reference>
             <el-button class="canvasTrigger" text :loading="busy" :disabled="busy || !directory" aria-label="切换画布" :aria-expanded="canvasListVisible">
-              <span>{{ activeCanvasName }}</span><icon-chevron-down :size="14" />
+              <span>{{ activeCanvasName }}</span><component :is="canvasListVisible ? IconChevronUp : IconChevronDown" :size="14" aria-hidden="true" />
             </el-button>
           </template>
           <div ref="canvasPicker" class="canvasPicker" @keydown.esc="canvasListVisible = false">
@@ -18,11 +18,11 @@
               <el-button class="iconButton" text :icon="IconPlus" :disabled="pickerBusy || editingId !== null || folderDraft !== null" title="新增画布" aria-label="新增画布" @click="handleAddCanvas" />
             </div>
             <el-scrollbar v-loading="loadingTree" maxHeight="min(440px, calc(100dvh - 198px))">
-              <el-tree ref="canvasTree" class="canvasTree" :data="treeEntries" nodeKey="path" :props="{ label: 'name' }" :currentNodeKey="activeCanvasId" :filterNodeMethod="filterEntry" defaultExpandAll highlightCurrent emptyText="" @nodeClick="selectEntry">
-                <template #default="{ data }">
+              <el-tree ref="canvasTree" class="canvasTree" :data="treeEntries" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="activeCanvasId" :filterNodeMethod="filterEntry" defaultExpandAll highlightCurrent emptyText="" @nodeClick="selectEntry">
+                <template #default="{ data, node }">
                   <div class="canvasEntry" :title="data.path" @contextmenu="openItemMenu($event, data)">
-                    <icon-folder-filled v-if="data.type === 'directory'" class="folderIcon" :size="30" />
-                    <icon-artboard v-else class="canvasIcon" :size="26" />
+                    <component v-if="data.type === 'directory'" :is="node.expanded && !node.isLeaf ? IconFolderOpen : IconFolder" class="folderIcon" :size="18" aria-hidden="true" />
+                    <icon-vector v-else class="canvasIcon" :size="18" />
                     <el-input v-if="data.draft" ref="folderInput" v-model="folderDraft" class="nameEditor" size="small" aria-label="文件夹名称" :disabled="busy" :maxlength="120" @click.stop @keydown.stop @keydown.enter.prevent="saveFolder" @keydown.esc.prevent="cancelFolder" @blur="saveFolder" />
                     <el-input v-else-if="editingId === data.path" ref="nameInput" v-model="canvasName" class="nameEditor" size="small" :disabled="busy" :maxlength="120" :aria-label="newCanvasId === data.path ? '新画布名称' : '画布名称'" @click.stop @keydown.stop @keydown.enter="saveCanvas" @keydown.esc.prevent="finishEdit" @blur="saveCanvas" />
                     <span v-else class="entryName">{{ data.name }}</span>
@@ -38,6 +38,25 @@
       </div>
     </el-card>
     <div class="menuExtension"><slot /></div>
+  </panel>
+  <panel class="balanceMenuPanel" position="top-right">
+    <div class="balanceList" tabindex="0" aria-label="供应商余额">
+      <el-card v-for="item in providerBalances" :key="item.id" class="balanceCard" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
+        <el-popover v-if="item.id === 'tfRouter'" :visible="balanceVisible" @update:visible="value => { if (!rechargeVisible) balanceVisible = value; }" trigger="click" placement="bottom-end" :width="360" :showArrow="false">
+          <template #reference>
+            <el-button class="balanceTrigger" text :aria-busy="item.loading" :title="item.error || 'TF-Router 剩余可用余额'" aria-label="TF-Router 余额与充值">
+              <span class="providerLabel">{{ item.label }}</span>
+              <span>{{ item.balance ? `${balanceFormat.format(Math.min(item.balance.balance, item.balance.keyBalance ?? Infinity))} ${item.balance.unit}` : '—' }}</span>
+            </el-button>
+          </template>
+          <tfAccount v-if="balanceVisible" :apiKey="tfBalanceApiKey" :visible="balanceVisible" :saveApiKey="saveTfMediaApiKey" @rechargeVisibleChange="rechargeVisible = $event" />
+        </el-popover>
+        <el-button v-else class="balanceTrigger" text :loading="item.loading" :title="item.error || `点击刷新 ${item.label} 余额`" :aria-label="`刷新 ${item.label} 余额`" @click="refreshProviderBalance(item.id)">
+          <span class="providerLabel">{{ item.label }}</span>
+          <span>{{ item.balance ? `${balanceFormat.format(Math.min(item.balance.balance, item.balance.keyBalance ?? Infinity))} ${item.balance.unit}` : '—' }}</span>
+        </el-button>
+      </el-card>
+    </div>
   </panel>
   <el-dropdown ref="itemMenu" trigger="contextmenu" virtualTriggering :virtualRef="menuAnchor" placement="bottom-start" :showArrow="false" :hideOnClick="false" :appendTo="canvasPicker" popperClass="canvasActionMenu" @command="handleItemCommand" @visibleChange="(opened: boolean) => { if (!opened) moveVisible = false; }">
     <template #dropdown>
@@ -62,14 +81,16 @@
 
 <script setup lang="ts">
 import axios from "axios";
-import { translate } from "@toonflow/i18n/vue";
+import { locale, translate } from "@toonflow/i18n/vue";
 import { computed, inject, nextTick, ref, shallowRef, watch, type ShallowRef } from "vue";
 import { Panel, useVueFlow, type FlowExportObject } from "@vue-flow/core";
 import { ElMessage, ElMessageBox, type DropdownInstance, type FilterNodeMethodFunction, type InputInstance, type TreeInstance } from "element-plus";
-import { IconArtboard, IconCheck, IconChevronDown, IconChevronRight, IconDots, IconFolder, IconFolderFilled, IconFolderPlus, IconPlus, IconSearch } from "@tabler/icons-vue";
+import { IconVector, IconCheck, IconChevronDown, IconChevronUp, IconChevronRight, IconDots, IconFolder, IconFolderOpen, IconFolderPlus, IconPlus, IconSearch } from "@tabler/icons-vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import useWorkspaceFiles from "@/lib/workspaceFiles";
 import { getCanvasAssetDirectories, isCanvasFile } from "@/pages/workspace/canvasFile";
+import tfAccount from "@/components/settings/tfAccount.vue";
+import { providerBalances, tfBalanceApiKey, saveTfMediaApiKey, refreshProviderBalance } from "@/lib/providerBilling";
 
 const props = defineProps<{
   directory?: string;
@@ -78,6 +99,9 @@ const props = defineProps<{
   flushSave: (action?: () => Promise<void>) => Promise<void>;
 }>();
 const workspaceStore = useWorkspaceStore();
+const balanceVisible = ref(false);
+const rechargeVisible = ref(false);
+const balanceFormat = computed(() => new Intl.NumberFormat(locale.value, { maximumFractionDigits: 6 }));
 const workspaceName = computed(() => workspaceStore.project?.name || "未命名工作区");
 const projectNameDraft = ref("");
 watch([() => workspaceStore.project?.directory, workspaceName], () => {
@@ -681,6 +705,41 @@ defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPat
 <style lang="scss" scoped>
 .canvasMenuPanel.vue-flow__panel {
   left: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(50% - 90px);
+}
+
+.balanceMenuPanel.vue-flow__panel {
+  max-width: calc(50% - 90px);
+
+  .balanceList {
+    display: flex;
+    gap: 8px;
+    max-width: 520px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+
+    .balanceCard {
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+      .providerLabel { color: var(--el-text-color-secondary); font-size: 12px; }
+      .balanceTrigger {
+        height: 32px;
+        padding: 0 4px;
+        font-size: 13px;
+        :deep(> span) { display: flex; align-items: center; gap: 6px; }
+      }
+    }
+  }
+}
+
+@container canvasWorkspace (max-width: 1040px) {
+  .balanceMenuPanel.vue-flow__panel {
+    top: 56px;
+    max-width: calc(100% - 30px);
+  }
 }
 
 .canvasPicker {
@@ -697,7 +756,7 @@ defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPat
 
   .canvasTree {
     background: transparent;
-    :deep(.el-tree-node__content) { height: 44px; border-radius: var(--el-border-radius-base); }
+    :deep(.el-tree-node__content) { height: 36px; border-radius: var(--el-border-radius-base); }
     :deep(.el-tree-node__expand-icon) { padding: 6px; }
 
     .canvasEntry {
@@ -709,8 +768,7 @@ defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPat
       height: 100%;
       padding-right: 4px;
 
-      .folderIcon { flex-shrink: 0; color: var(--el-text-color-secondary); }
-      .canvasIcon { flex-shrink: 0; width: 30px; color: var(--el-color-primary); }
+      .folderIcon, .canvasIcon { flex-shrink: 0; color: var(--el-text-color-secondary); }
       .entryName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
       .nameEditor { flex: 1; min-width: 0; }
       .selectedIcon { flex-shrink: 0; color: var(--el-color-primary); }
@@ -756,16 +814,22 @@ defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPat
 }
 
 .canvasMenu {
-  margin-left: 100px;
+  margin-left: 90px;
+  min-width: 0;
 
   .menuContent {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 4px;
+
+    .el-divider { margin: 0 4px; }
 
     .workspaceNameInput {
       width: auto;
+      height: 32px;
       min-width: 2em;
+      max-width: 180px;
+      font-size: 13px;
 
       &::after {
         content: var(--workspaceName);
@@ -788,10 +852,15 @@ defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPat
     }
 
     .canvasTrigger {
+      min-width: 0;
+      height: 32px;
       padding: 0 4px;
-      :deep(> span) { display: flex; align-items: center; gap: 6px; }
-      span { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+      font-size: 13px;
+      :deep(> span) { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      span { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
     }
+
   }
 }
+
 </style>

@@ -2,6 +2,7 @@
   <main class="workspacePage" :style="{ '--agentWidth': `${agentVisible ? agentWidth : 0}px` }">
     <canvasPanel
       :key="workspaceStore.project?.directory"
+      v-model:selectedTool="selectedTool"
       ref="canvasPanelRef"
       class="canvasPanel"
       :class="{ backgroundPanel: activePanel !== 'canvas' }"
@@ -16,6 +17,7 @@
         :ref="setDocumentPanel"
         :readNode="readDocumentNode"
         :readNodes="readDocumentNodes"
+        :focusNode="focusDocumentNode"
         :mountNode="mountDocumentNode"
         :resolveNodeFile="resolveDocumentNodeFile"
         :observeNode="observeDocumentNode"
@@ -24,23 +26,47 @@
         :saveNode="saveDocumentNode" />
     </keep-alive>
     <workspaceMenu class="workspaceMenu" @openSettings="settingsVisible = true" />
-    <el-segmented :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
-      <template #default="{ item }">
-        <span class="panelOption">
-          <component :is="item.icon" :size="14" aria-hidden="true" />
-          {{ item.label }}
-        </span>
-      </template>
-    </el-segmented>
-    <el-tooltip v-if="!agentVisible" content="Toonflow Agent" placement="bottom" :showArrow="false" :hideAfter="0">
-      <el-button
-        class="agentButton"
-        :class="{ active: agentVisible }"
-        :aria-expanded="agentVisible"
-        aria-label="Toonflow Agent"
-        aria-controls="agentPanel"
-        @click="agentVisible = !agentVisible"></el-button>
-    </el-tooltip>
+    <div class="workspaceTools">
+      <el-segmented :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
+        <template #default="{ item }">
+          <span class="panelOption">
+            <component :is="item.icon" :size="14" aria-hidden="true" />
+            {{ item.label }}
+          </span>
+        </template>
+      </el-segmented>
+      <div class="bottomTools">
+        <el-card v-if="activePanel === 'canvas'" class="toolMenu" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
+          <div class="toolMenuContent" role="toolbar" aria-label="画布工具">
+            <el-tooltip content="添加节点" placement="top" :showArrow="false" :hideAfter="0" :enterable="false" :triggerKeys="[]">
+              <el-button class="toolButton addNodeButton" :disabled="!canvasPanelRef?.canvasReady || settingsVisible" aria-label="添加节点" aria-haspopup="menu" @click="canvasPanelRef?.addNodeAtPointer()">
+                <icon-plus :size="18" aria-hidden="true" />
+              </el-button>
+            </el-tooltip>
+            <el-tooltip :content="selectedTool === 'move' ? '移动工具，点击切换为抓手' : '抓手工具，点击切换为移动'" placement="top" :showArrow="false" :hideAfter="0" :enterable="false" :triggerKeys="[]">
+              <el-button
+                class="toolButton"
+                text
+                :type="selectedTool === 'hand' ? 'primary' : 'default'"
+                :aria-pressed="selectedTool === 'hand'"
+                aria-label="切换抓手/移动工具"
+                @click="selectedTool = selectedTool === 'move' ? 'hand' : 'move'">
+                <component :is="selectedTool === 'move' ? IconPointer : IconHandStop" :size="18" aria-hidden="true" />
+              </el-button>
+            </el-tooltip>
+          </div>
+        </el-card>
+        <el-tooltip v-if="!agentVisible" content="Toonflow Agent" placement="top" :showArrow="false" :hideAfter="0">
+          <el-button
+            class="agentButton"
+            :class="{ standalone: activePanel !== 'canvas' }"
+            :aria-expanded="agentVisible"
+            aria-label="Toonflow Agent"
+            aria-controls="agentPanel"
+            @click="agentVisible = !agentVisible"></el-button>
+        </el-tooltip>
+      </div>
+    </div>
     <floatingAgent v-model="agentVisible" @resize="agentWidth = $event" />
     <settings v-model="settingsVisible" />
   </main>
@@ -50,12 +76,13 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onScopeDispose, provide, ref, shallowRef, watch, type ComponentPublicInstance } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import axios from "axios";
-import { IconLayoutDashboard, IconFileText } from "@tabler/icons-vue";
+import { IconVector, IconFileText, IconPointer, IconHandStop, IconPlus } from "@tabler/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import settings from "@/components/settings/index.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { registerWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
 import anonymousData from "@/lib/anonymousData";
+import { useProviderBalances } from "@/lib/providerBilling";
 import canvasPanel from "./panels/canvas/canvasHost.vue";
 import type { DocumentNodeOptions } from "./panels/canvas/canvasFiles";
 import workspaceMenu from "./components/workspaceMenu.vue";
@@ -64,10 +91,12 @@ import floatingAgent from "./components/floatingAgent.vue";
 const documentPanel = defineAsyncComponent(() => import("./panels/document/index.vue"));
 
 const activePanel = ref<"canvas" | "document">("canvas");
+const selectedTool = ref<"move" | "hand">("move");
 onMounted(() => anonymousData.track("workspace.canvas"));
 const workspaceStore = useWorkspaceStore();
+useProviderBalances();
 const panelOptions = [
-  { label: "画布", value: "canvas", icon: IconLayoutDashboard },
+  { label: "画布", value: "canvas", icon: IconVector },
   { label: "文档", value: "document", icon: IconFileText },
 ];
 const agentVisible = ref(true);
@@ -194,6 +223,13 @@ function readDocumentNodes(directory: string, options?: DocumentNodeOptions) {
   return canvasPanelRef.value.readDocumentNodes(directory, options);
 }
 
+async function focusDocumentNode(directory: string, canvasPath: string, nodeId: string) {
+  if (!directory || workspaceStore.project?.directory !== directory) throw new Error("工作目录已切换，请重新选择节点");
+  if (!await switchPanel("canvas")) throw new Error("画布面板无法打开");
+  if (!canvasPanelRef.value) throw new Error("画布尚未就绪");
+  await canvasPanelRef.value.focusDocumentNode(directory, canvasPath, nodeId);
+}
+
 function mountDocumentNode(directory: string, canvasPath: string, nodeId: string, target: HTMLElement) {
   if (!canvasPanelRef.value) throw new Error("画布尚未就绪");
   return canvasPanelRef.value.mountDocumentNode(directory, canvasPath, nodeId, target);
@@ -235,6 +271,8 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
   .canvasPanel {
     position: absolute;
     inset: 0;
+    width: calc(100% - var(--agentWidth, 0px));
+    container: canvasWorkspace / inline-size;
 
     &.backgroundPanel {
       opacity: 0;
@@ -250,113 +288,221 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
     z-index: 5;
   }
 
-  .panelSwitcher {
-    --el-border-radius-base: 999px;
-    --el-segmented-bg-color: var(--el-bg-color-overlay);
-    --el-segmented-item-selected-color: var(--el-color-primary);
-    --el-segmented-item-selected-bg-color: var(--el-color-primary-light-9);
+  .workspaceTools {
     position: absolute;
-    top: 15px;
-    left: 50%;
-    z-index: 5;
-    min-height: 32px;
-    padding: 3px;
-    border: 1px solid var(--el-border-color-light);
-    box-shadow: var(--el-box-shadow-lighter);
-    font-size: 12px;
-    transform: translateX(-50%);
+    inset: 0;
+    width: calc(100% - var(--agentWidth, 0px));
+    container: workspaceTools / inline-size;
+    pointer-events: none;
 
-    .panelOption {
+    .panelSwitcher {
+      --el-border-radius-base: 999px;
+      --el-segmented-bg-color: var(--el-bg-color-overlay);
+      --el-segmented-item-selected-color: var(--el-color-primary);
+      --el-segmented-item-selected-bg-color: var(--el-color-primary-light-9);
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      z-index: 5;
+      min-height: 32px;
+      padding: 3px;
+      border: 1px solid var(--el-border-color-light);
+      box-shadow: var(--el-box-shadow-lighter);
+      font-size: 12px;
+      transform: translateX(-50%);
+      pointer-events: auto;
+
+      .panelOption {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 0 3px;
+        line-height: 24px;
+      }
+    }
+
+    .bottomTools {
+      position: absolute;
+      bottom: 15px;
+      left: 50%;
+      z-index: 5;
       display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 5px;
-      padding: 0 3px;
-      line-height: 24px;
-    }
-  }
+      gap: 8px;
+      transform: translateX(-50%);
+      pointer-events: auto;
 
-  .agentButton {
-    position: absolute;
-    top: 15px;
-    right: 15px;
-    z-index: 5;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: 1px solid var(--el-border-color-light);
-    border-radius: 50%;
-    background: linear-gradient(145deg, var(--el-fill-color-light), var(--el-bg-color-overlay));
-    color: #f4fffe;
-    overflow: hidden;
-    isolation: isolate;
-    transition: transform 180ms ease;
+      .toolMenu {
+        flex-shrink: 0;
+        transition: none;
 
-    &::before,
-    &::after {
-      content: "";
-      position: absolute;
-      inset: 5px;
-      border-radius: 50%;
-      pointer-events: none;
-    }
+        .toolMenuContent {
+          display: flex;
+          align-items: center;
+          gap: 4px;
 
-    &::before {
-      z-index: -2;
-      background: radial-gradient(ellipse at 22% 15%, #a5fff0, transparent 55%), radial-gradient(ellipse at 85% 85%, #a999ff, transparent 60%),
-        radial-gradient(ellipse at 85% 20%, #1dd6cb, transparent 55%), linear-gradient(150deg, #12b8c9, #2765ba 65%, #5a5cc4);
-      animation: agentFlow 10s linear infinite;
-      filter: saturate(0.85);
-      transition: filter 180ms ease;
-    }
+          .toolButton {
+            width: 32px;
+            height: 32px;
+            margin: 0;
+            padding: 0;
 
-    &::after {
-      z-index: -1;
-      background: radial-gradient(ellipse at 30% 12%, #ffffff80, transparent 48%), radial-gradient(ellipse at 65% 95%, #17246070, transparent 65%);
-      box-shadow: inset 0 1px 2px #ffffff80, inset 0 -2px 4px #14255460;
-    }
+            &.addNodeButton {
+              color: var(--el-bg-color);
+              background: var(--el-text-color-primary);
+              border-color: transparent;
 
-    &.active::before,
-    &:hover::before {
-      filter: saturate(1.15);
-    }
+              &:hover { opacity: 0.85; }
+              &.is-disabled { opacity: 0.45; }
+            }
+          }
 
-    &:hover {
-      transform: translateY(-1px);
-    }
+          .el-divider { margin: 0; }
+        }
+      }
 
-    &:active {
-      transform: scale(0.95);
-    }
+      .agentButton {
+        position: absolute;
+        left: calc(100% + 8px);
+        width: 40px;
+        height: 40px;
+        flex-shrink: 0;
+        margin: 0;
+        padding: 0;
+        border: 1px solid color-mix(in srgb, #6edfdc 30%, var(--el-border-color-light));
+        border-radius: 50%;
+        background: linear-gradient(145deg, color-mix(in srgb, #96f9f0 15%, var(--el-bg-color-overlay)), var(--el-bg-color-overlay) 65%,
+          color-mix(in srgb, #8588ff 18%, var(--el-bg-color-overlay)));
+        box-shadow: inset 0 1px 0 #ffffff52;
+        color: #f4fffe;
+        overflow: hidden;
+        isolation: isolate;
+        transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 
-    &:focus-visible {
-      outline: 2px solid var(--el-color-primary);
-      outline-offset: 3px;
-    }
+        &.standalone {
+          position: relative;
+          left: auto;
+        }
 
-    .agentLogo {
-      width: 24px;
-      height: 24px;
-      flex-shrink: 0;
-      background: currentColor;
-      mask-size: contain;
-      mask-position: center;
-      mask-repeat: no-repeat;
-    }
+        &::before,
+        &::after {
+          content: "";
+          position: absolute;
+          inset: 4px;
+          border-radius: 50%;
+          pointer-events: none;
+        }
 
-    @media (prefers-reduced-motion: reduce) {
-      transition: none;
+        &::before {
+          z-index: -2;
+          background: radial-gradient(ellipse at 22% 15%, #adfff0, transparent 50%), radial-gradient(ellipse at 85% 85%, #b29aff, transparent 55%),
+            radial-gradient(ellipse at 85% 20%, #25dccc, transparent 50%), linear-gradient(150deg, #10aec1, #3765c6 60%, #765bd3);
+          animation: agentFlow 5.4s linear infinite;
+          filter: saturate(1.05);
+          transition: filter 180ms ease;
+        }
 
-      &::before {
-        animation: none;
+        &::after {
+          z-index: -1;
+          background: radial-gradient(ellipse 12% 18% at 50% 50%, #ffffffa6, #d3fff773 35%, transparent 80%),
+            radial-gradient(ellipse at 32% 18%, #ffffff99, transparent 42%), radial-gradient(ellipse at 65% 95%, #17246070, transparent 65%);
+          background-size: 160% 160%, 100% 100%, 100% 100%;
+          background-position: 75% 85%, 0 0, 0 0;
+          background-repeat: no-repeat;
+          box-shadow: inset 0 0 0 1px #ffffff52, inset 0 2px 3px #ffffff80, inset 0 -3px 6px #16305b73;
+          animation: agentShine 3.2s linear infinite;
+        }
+
+        &:hover::before {
+          filter: saturate(1.2);
+        }
+
+        &:hover {
+          transform: translateY(-1px);
+          border-color: #87f2eb99;
+          box-shadow: inset 0 1px 0 #ffffff70;
+        }
+
+        &:active {
+          transform: scale(0.95);
+        }
+
+        &:focus-visible {
+          outline: 2px solid var(--el-color-primary);
+          outline-offset: 3px;
+        }
+
+        .agentLogo {
+          width: 24px;
+          height: 24px;
+          flex-shrink: 0;
+          background: currentColor;
+          mask-size: contain;
+          mask-position: center;
+          mask-repeat: no-repeat;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          transition: none;
+
+          &::before,
+          &::after {
+            animation: none;
+          }
+        }
       }
     }
   }
 }
 
 @keyframes agentFlow {
+  from {
+    transform: rotate(0deg) scale(1);
+  }
+  25% {
+    transform: rotate(90deg) scale(1.06, 1.02);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.02, 1.06);
+  }
+  75% {
+    transform: rotate(270deg) scale(1.05, 1.03);
+  }
   to {
-    transform: rotate(360deg);
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes agentShine {
+  0%,
+  100% {
+    background-size: 160% 160%, 100% 100%, 100% 100%;
+    background-position: 75% 85%, 0 0, 0 0;
+  }
+  12.5% {
+    background-position: 40% 98%, 0 0, 0 0;
+  }
+  25% {
+    background-size: 180% 140%, 100% 100%, 100% 100%;
+    background-position: 10% 75%, 0 0, 0 0;
+  }
+  37.5% {
+    background-position: 2% 40%, 0 0, 0 0;
+  }
+  50% {
+    background-size: 160% 160%, 100% 100%, 100% 100%;
+    background-position: 25% 10%, 0 0, 0 0;
+  }
+  62.5% {
+    background-position: 60% 2%, 0 0, 0 0;
+  }
+  75% {
+    background-size: 140% 180%, 100% 100%, 100% 100%;
+    background-position: 95% 25%, 0 0, 0 0;
+  }
+  87.5% {
+    background-position: 98% 60%, 0 0, 0 0;
   }
 }
 </style>

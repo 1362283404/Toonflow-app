@@ -56,14 +56,14 @@ const result = await Bun.build({
   // ACT: 服务端与 stdio 共用构建依赖，避免在 APK 中重复携带 MCP、Zod 和语言包。
   entrypoints: [join(mobileRoot, "src/server.ts"), join(projectRoot, "packages/mcp/src/stdio.ts")],
   target: "bun", format: "esm", splitting: true, outdir: payload,
-  naming: "[name].js", minify: true, external: ["@silvia-odwyer/photon-node"],
+  naming: "[name].js", minify: true, external: ["@silvia-odwyer/photon-node", "@firecrawl/anydoc", "@firecrawl/anydoc-wasm"],
   define: { "process.env.appVersion": JSON.stringify(version) },
 });
 if (!result.success) throw new AggregateError(result.logs, "构建移动端服务失败");
 for (const directory of ["web", "nodes", "tools", "ext", "providers", "skills"]) {
   await cp(join(projectRoot, "build", directory), join(payload, directory), { recursive: true });
 }
-// ACT: Photon 按自身目录读取 WASM，沿用 server 的完整 external 包布局。
+// ACT: Photon 与 anydoc 按自身目录读取 WASM，沿用 server 的完整 external 包布局。
 await cp(join(projectRoot, "build/server/node_modules"), join(payload, "node_modules"), { recursive: true });
 const revision = new Bun.CryptoHasher("sha256");
 async function hashPayload(directory: string) {

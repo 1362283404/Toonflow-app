@@ -94,7 +94,7 @@ await mkdir(payload, { recursive: true });
 const result = await Bun.build({
   entrypoints: [join(projectRoot, "apps/mobile/src/server.ts"), join(projectRoot, "packages/mcp/src/stdio.ts")],
   target: "bun", format: "esm", splitting: true, outdir: payload, naming: "[name].js", minify: true,
-  external: ["@silvia-odwyer/photon-node"], define: { "process.env.appVersion": JSON.stringify(version) },
+  external: ["@silvia-odwyer/photon-node", "@firecrawl/anydoc", "@firecrawl/anydoc-wasm"], define: { "process.env.appVersion": JSON.stringify(version) },
 });
 if (!result.success) throw new AggregateError(result.logs, "构建 OHOS 移动端服务失败");
 for (const directory of ["web", "nodes", "tools", "ext", "providers", "skills"]) {

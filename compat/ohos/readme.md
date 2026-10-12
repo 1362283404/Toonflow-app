@@ -59,5 +59,4 @@ $hdc = Join-Path $env:DEVECO_HOME 'sdk\default\openharmony\toolchains\hdc.exe'
 - 首次进入网页前执行现有浏览器能力预检；系统 ArkWeb 不满足要求时显示错误。OHOS 不含 Android GeckoView。
 - 保留横屏、全屏、文件上传和系统文件保存；设备互联可手输配对码。相机授权和拍摄扫码尚未接入。
 - Bun 随 Ability 生命周期运行，没有后台长任务保证。`TOONFLOW_PLATFORM=ohos` 用于避免把该 Bun 报告的 `linux` 误当作 Linux FFmpeg 支持。
-- 现存公共验证入口可指定构建资源目录：`bun apps/mobile/scripts/verify.ts build/ohos/payload`。Windows 上要求 Bun 1.4.2；它验证页面、鉴权、插件、文件冲突、上传、Range、SSE 取消和设备互联，不连接模型供应商。主机通过不能证明 HAP 沙箱允许执行 Bun。
 - 必须在 ARM64 设备上继续验证 HAP 签名安装、应用沙箱内 `posix_spawn`/ELF 执行/JIT、Bun FFI 与原子文件创建、ArkWeb 实际渲染、系统文件选择及重启持久化。上游终端环境的 Bun 支持不能替代普通 HarmonyOS 手机 HAP 的验证。

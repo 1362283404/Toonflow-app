@@ -1,6 +1,7 @@
 import { $ } from "bun";
 import { cpSync, existsSync, mkdirSync, realpathSync, rmSync } from "@toonflow/file";
 import { dirname, resolve } from "node:path";
+import copyDocumentPackages from "../../server/scripts/copyDocumentPackages";
 
 const projectDir = resolve(import.meta.dir, "../../..");
 const mode = process.argv[2];
@@ -58,6 +59,7 @@ const photonDirectory = dirname(Bun.resolveSync("@silvia-odwyer/photon-node", ag
 const photonOutput = resolve(projectDir, "build/desktop/photon");
 rmSync(photonOutput, { recursive: true, force: true });
 cpSync(photonDirectory, photonOutput, { recursive: true });
+await copyDocumentPackages(resolve(projectDir, "build/desktop/node_modules"));
 if (isIntelMac) {
   // ACT: 共用插件和 Web 构建；Intel Mac 仅将 SDK 适配交给独立的 1.18.1。
   await $`${process.execPath} ${resolve(projectDir, "compat/macIntel/build.ts")} ${mode === "package" ? "build" : mode}`.cwd(projectDir);
