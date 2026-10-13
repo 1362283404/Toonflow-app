@@ -246,6 +246,20 @@ jobs:
           fi
           printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
           printf 'notarizationKeyPath=%s\n' "$notarizationKeyPath" >> "$GITHUB_OUTPUT"
+      - name: 为 Apple 公证票据网络错误启用有限重试
+        if: matrix.target == 'macArm64'
+        run: |
+          bun -e '
+          import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "@toonflow/file";
+          import { join } from "node:path";
+          const directory = join(process.env.RUNNER_TEMP, "toonflowMacTools");
+          mkdirSync(directory, { recursive: true });
+          const target = join(directory, "xcrun");
+          // ACT: 无扩展名入口保持 JavaScript 语法，并统一 LF，保证 macOS shebang 可执行。
+          writeFileSync(target, readFileSync("apps/desktop/scripts/macXcrun.ts", "utf8").replace(/\r\n/g, "\n"));
+          chmodSync(target, 0o755);
+          appendFileSync(process.env.GITHUB_PATH, `${directory}\n`);
+          '
       - name: 构建 macOS 安装包及更新文件（ARM 自动公证）
         if: runner.os == 'macOS'
         env:
