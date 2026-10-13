@@ -242,9 +242,11 @@ export default {
     if (result.code !== 200) throw new Error(this.tool.errorMessage(result) || "TF-router 价格查询失败");
     if (result.data === null) return null;
     const price = object(result.data);
+    if (typeof price.price === "string" && price.price.trim() && typeof price.tips === "string") return { price: price.price, tips: price.tips };
+    // ACT: 兼容仍返回数值报价的官方接口；统一升级后可移除此分支。
     const amount = balanceAmount(price.amount);
     if (amount < 0 || typeof price.unit !== "string" || !price.unit.trim()) throw new Error("TF-router 价格响应格式错误");
-    return { amount, unit: price.unit.trim() };
+    return { price: `${amount} ${price.unit.trim()}`, tips: "以实际扣费为准" };
   },
   async getBalance(): Promise<ProviderBalance> {
     const result = await fetchJson(this, "balance");

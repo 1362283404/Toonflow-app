@@ -39,11 +39,14 @@ const instances = shallowReactive(new Map<string, CanvasInstance>());
 const activeInstance = computed(() => instances.get(activeKey.value));
 const canvasId = computed(() => activeInstance.value?.canvasId ?? "");
 const canvasReady = computed(() => activeInstance.value?.canvasReady ?? false);
+const canvasListReady = computed(() => activeInstance.value?.canvasListReady ?? false);
 const lifetime = new AbortController();
 const workspaceStore = useWorkspaceStore();
 const canvases = shallowRef<{ id: string; name: string }[]>([]);
 let fileActionBusy = false;
 provide("canvasList", canvases);
+provide("canvasFolders", shallowRef([]));
+provide("canvasLoadedDirectories", shallowRef<string[]>([]));
 provide("canvasAssetNodes", (id: string) => [...instances.values()].find(panel => panel.canvasId === id)?.getRetainedNodes() ?? []);
 watch(canvases, (current, previous) => {
   const removed = new Set(previous.filter(canvas => !current.includes(canvas)).map(canvas => canvas.id));
@@ -76,7 +79,7 @@ async function ensureCanvas(fileName: string, signal?: AbortSignal, activate = f
   callSignal.throwIfAborted();
   fileName = relativePath(fileName);
   if (!canvases.value.length && entries.value.some(entry => entry.fileName === undefined)) {
-    await waitForControlValue(() => activeInstance.value?.canvasReady || activeInstance.value?.loadError || undefined, callSignal);
+    await waitForControlValue(() => activeInstance.value?.canvasListReady || activeInstance.value?.loadError || undefined, callSignal);
   }
   fileName = canonicalCanvasPath(fileName);
   if (!canvases.value.some(canvas => canvas.id === fileName)) {
@@ -362,7 +365,16 @@ function mentionInstance(canvasId: string) {
 
 const mentionSource: MentionCanvasSource = {
   currentCanvasId: () => canvasId.value,
-  canvases: () => canvases.value.map(canvas => ({ id: canvas.id, name: canvas.id.replace(/\.json$/i, "") })),
+  async canvases(signal) {
+    const directory = workspaceStore.project?.directory;
+    const panel = activeInstance.value;
+    if (!directory || !panel) return [];
+    const callSignal = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
+    const loaded = await panel.getCanvases(callSignal);
+    checkDirectory(directory);
+    callSignal.throwIfAborted();
+    return loaded.map(canvas => ({ id: canvas.id, name: canvas.id.replace(/\.json$/i, "") }));
+  },
   nodes(canvasId, options) {
     const panel = mentionInstance(canvasId);
     if (!panel) return;
@@ -391,7 +403,7 @@ const mentionSource: MentionCanvasSource = {
   },
 };
 
-defineExpose({ canvasId, canvasReady, getCanvasContext, readDocumentNode, readDocumentNodes, focusDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, resolveDocumentNodeFile, performFileAction, flushSave, cancelSave,
+defineExpose({ canvasId, canvasReady, canvasListReady, getCanvasContext, readDocumentNode, readDocumentNodes, focusDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, resolveDocumentNodeFile, performFileAction, flushSave, cancelSave,
   addNodeAtPointer: () => activeInstance.value?.addNodeAtPointer(),
   mentionSource,
   get saveBusy() { return fileActionBusy || [...instances.values()].some(panel => panel.saveBusy); },

@@ -9,7 +9,7 @@ export type MentionCanvasNode = { id: string; type?: string; label?: unknown; da
 export type MentionQuery = { query?: string; cursor?: string; limit?: number; signal?: AbortSignal };
 export type MentionCanvasSource = {
   currentCanvasId(): string;
-  canvases(): { id: string; name: string }[];
+  canvases(signal?: AbortSignal): Promise<{ id: string; name: string }[]>;
   nodes(canvasId: string, options: MentionQuery): Promise<MentionPage<MentionNode>> | undefined;
   outputs(canvasId: string, nodeId: string): MentionOutput[] | undefined;
   selectCanvas(canvasId: string, nodeId: string, outputId: string): Promise<AgentMention> | undefined;

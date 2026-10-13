@@ -1,8 +1,8 @@
 <template>
-  <el-tooltip v-model:visible="infoVisible" :content="priceLabel" placement="top" :showArrow="false" :trigger="['hover', 'focus']" :triggerKeys="[]" :popperStyle="{ maxWidth: '280px', lineHeight: '1.6' }">
-    <button type="button" class="mediaPrice" :aria-label="priceLabel" :aria-busy="loading" @pointerdown.stop @click.stop="infoVisible = true">
-      <span>{{ loading ? "正在估价…" : price ? `${price.amount} ${price.unit}` : "无法计算价格" }}</span>
-      <icon-info-circle v-if="!price && !loading" :size="14" aria-hidden="true" />
+  <el-tooltip v-model:visible="infoVisible" :content="priceLabel" :disabled="!priceLabel" placement="top" :showArrow="false" :trigger="['hover', 'focus']" :triggerKeys="[]" :popperStyle="{ maxWidth: '280px', lineHeight: '1.6', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }">
+    <button type="button" class="mediaPrice" :aria-label="price?.price || priceLabel" :aria-busy="loading" @pointerdown.stop @click.stop="infoVisible = Boolean(priceLabel)">
+      <span>{{ loading ? "正在估价…" : price ? price.price : "无法计算价格" }}</span>
+      <icon-info-circle v-if="!loading && (!price || price.tips)" :size="14" aria-hidden="true" />
     </button>
   </el-tooltip>
 </template>
@@ -23,7 +23,7 @@ const error = ref("");
 const revision = ref(0);
 const priceLabel = computed(() => !props.supported ? "当前供应商尚未提供预估价格，无法提前计算费用。你仍可发起生成，实际费用以供应商结算为准。" : loading.value ? "正在查询预估价格" : error.value
   ? `价格查询失败：${error.value}。请检查供应商配置或稍后重试。`
-  : price.value ? `预估价格：${price.value.amount} ${price.value.unit}，以实际扣费为准` : "当前模型或参数组合暂无预估价格。你仍可发起生成，实际费用以供应商结算为准。");
+  : price.value ? price.value.tips : "当前模型或参数组合暂无预估价格。你仍可发起生成，实际费用以供应商结算为准。");
 
 function refreshPrice(event: Event) {
   if (event.type === "toonflow:plugin-installed" && (event as CustomEvent<{ type?: string }>).detail?.type !== "provider") return;
@@ -73,6 +73,7 @@ watch([() => JSON.stringify(props.input), () => props.supported, currentDirector
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  max-width: 160px;
   padding: 0;
   border: 0;
   background: none;
@@ -83,7 +84,8 @@ watch([() => JSON.stringify(props.input), () => props.supported, currentDirector
   white-space: nowrap;
   cursor: help;
 
-  > svg { transform: translateY(1px); }
+  > span { overflow: hidden; text-overflow: ellipsis; }
+  > svg { flex-shrink: 0; transform: translateY(1px); }
   &:hover { color: var(--el-text-color-primary); }
   &:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; border-radius: 2px; }
 }

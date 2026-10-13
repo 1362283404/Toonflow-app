@@ -178,13 +178,8 @@ export async function generateMedia(
   const rules = Array.isArray(provider.rules) ? provider.rules : [];
   if (rules.some(rule => rule.field === "apiKey") && (typeof provider.config.apiKey !== "string" || !provider.config.apiKey.trim())) invalid("请先在媒体模型设置中配置供应商 API Key");
   const prepared = await prepareRequest(directory, mediaType, request, readReference, signal);
-  const priceRequest = provider.getPrice ? await preparePriceRequest(directory, mediaType, request, signal).catch(() => {
-    signal?.throwIfAborted();
-    return null;
-  }) : null;
   signal?.throwIfAborted();
-  const finish = await beginGeneration(provider, priceRequest);
-  let succeeded = false;
+  const finish = beginGeneration(provider);
   const written: string[] = [];
   const result: GeneratedMedia[] = [];
   try {
@@ -210,11 +205,10 @@ export async function generateMedia(
       } finally { release(); }
     }
     signal?.throwIfAborted();
-    succeeded = true;
     return result;
   } catch (err) {
     // ACT: 只回滚本次创建的文件，保留目录中已有的节点资源。
     await Promise.all(written.map(path => unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; })));
     throw err;
-  } finally { finish(succeeded); }
+  } finally { finish(); }
 }

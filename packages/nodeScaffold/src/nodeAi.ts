@@ -31,7 +31,7 @@ export type NodeImageResult = { path: string; mimeType: string; mediaType: "imag
 export type NodeVideoRequest = Omit<MediaGenerationRequest, "size"> & { directory: string; outputDirectory: string };
 export type NodeVideoResult = { path: string; mimeType: string; mediaType: "video" };
 export type NodeMediaPriceRequest = (NodeImageRequest & { mediaType: "image" }) | (NodeVideoRequest & { mediaType: "video" }) | (NodeAudioRequest & { mediaType: "audio" });
-export type NodeMediaPrice = { amount: number; unit: string };
+export type NodeMediaPrice = { price: string; tips: string };
 export type NodeAudioRequest = Pick<MediaGenerationRequest, "providerId" | "modelId" | "prompt" | "images" | "audios" | "voice" | "speed" | "volume" | "pitch" | "language" | "format" | "sampleRate"> & { directory: string; outputDirectory: string };
 export type NodeAudioResult = { path: string; mimeType: string; mediaType: "audio" };
 export type NodeAiRequest = {
@@ -221,7 +221,7 @@ export function useNodeAi() {
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(15000),
       }).then(readResult<NodeMediaPrice | null>).then(price => {
-        if (price !== null && (!price || !Number.isFinite(price.amount) || price.amount < 0 || typeof price.unit !== "string" || !price.unit.trim())) {
+        if (price !== null && (!price || typeof price.price !== "string" || !price.price.trim() || typeof price.tips !== "string")) {
           throw new Error("价格响应格式不正确");
         }
         pending.expires = hasReferences ? 0 : Date.now() + 30000;

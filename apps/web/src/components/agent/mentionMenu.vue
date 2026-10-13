@@ -146,7 +146,7 @@ async function loadList(append = false) {
   loadError.value = "";
   try {
     if (listingCanvases.value) {
-      const result = await sources.canvases();
+      const result = await sources.canvases(controller.signal);
       if (controller.signal.aborted) return;
       canvases.value = result;
     } else if (scope.value === "assets") {

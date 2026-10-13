@@ -9,7 +9,6 @@ type RuntimeProvider = Awaited<ReturnType<typeof loadMediaProviderSource>>;
 type BalanceSnapshot = { accountId: string; balance: ProviderBalance | null; revision: number };
 type Account = BalanceSnapshot & {
   provider?: RuntimeProvider;
-  active: number;
   epoch: number;
   refreshRequested: boolean;
   pending?: Promise<void>;
@@ -17,13 +16,17 @@ type Account = BalanceSnapshot & {
 };
 
 const unitSchema = z.string().trim().min(1).max(64);
-const priceSchema = z.object({ amount: z.number().finite().nonnegative(), unit: unitSchema });
+// ACT: 已安装的旧供应商仍可返回数值报价，统一转换为展示文本。
+const priceSchema = z.object({ price: z.string().trim().min(1), tips: z.string() }).or(
+  z.object({ amount: z.number().finite().nonnegative(), unit: unitSchema })
+    .transform(({ amount, unit }) => ({ price: `${amount} ${unit}`, tips: "以实际扣费为准" })),
+);
 const balanceSchema = z.object({
   balance: z.number().finite(), unit: unitSchema,
   keyBalance: z.number().finite().nullable().optional(),
   totalConsumption: z.number().finite().optional(), totalRecharge: z.number().finite().optional(),
 });
-// ACT: 单进程内存账本；重启后以服务器余额重新校准，多进程部署时需共享账本。
+// ACT: 单进程内存余额快照；生成结束后向供应商刷新，多进程部署时需共享刷新状态。
 const accounts = new Map<string, Account>();
 const prices = new Map<string, { expires: number; value: Promise<ProviderPrice | null> }>();
 const accountSecret = randomBytes(32);
@@ -74,10 +77,6 @@ function publish(account: Account) {
 async function refresh(account: Account): Promise<void> {
   const provider = account.provider;
   if (!provider?.getBalance) return;
-  if (account.active) {
-    account.refreshRequested = true;
-    return;
-  }
   if (account.pending) return account.pending;
   const epoch = account.epoch;
   account.refreshRequested = false;
@@ -88,7 +87,7 @@ async function refresh(account: Account): Promise<void> {
       balance = balanceSchema.parse(await waitForQuery(Promise.resolve().then(() => provider.getBalance!.call(context)), context.signal));
     }
     catch (error) { throw new Error(provider.tool.errorMessage(error) || "余额查询失败"); }
-    if (account.active || epoch !== account.epoch) {
+    if (epoch !== account.epoch) {
       account.refreshRequested = true;
       return;
     }
@@ -98,7 +97,7 @@ async function refresh(account: Account): Promise<void> {
   try { await account.pending; }
   finally {
     account.pending = undefined;
-    if (!account.active && account.refreshRequested) void refresh(account).catch(() => {});
+    if (account.refreshRequested) void refresh(account).catch(() => {});
   }
 }
 
@@ -106,7 +105,7 @@ function getAccount(provider: RuntimeProvider) {
   const id = accountId(provider);
   let account = accounts.get(id);
   if (!account) {
-    account = { accountId: id, balance: null, revision: 0, active: 0, epoch: 0, refreshRequested: false, connections: new Set() };
+    account = { accountId: id, balance: null, revision: 0, epoch: 0, refreshRequested: false, connections: new Set() };
     accounts.set(id, account);
   }
   return account;
@@ -152,41 +151,18 @@ export async function getProviderPrice(provider: RuntimeProvider, request: Provi
   return entry.value;
 }
 
-export async function beginGeneration(provider: RuntimeProvider, request: ProviderPriceRequest | null) {
+export function beginGeneration(provider: RuntimeProvider) {
   const account = getAccount(provider);
-  account.active++;
+  account.provider = provider;
   account.epoch++;
-  let price: ProviderPrice | null = null;
-  let deducted = false;
   let finished = false;
-  const finish = (success: boolean) => {
+  return () => {
     if (finished) return;
     finished = true;
-    account.active--;
-    if (!success || !deducted) account.refreshRequested = true;
-    if (success && deducted && account.balance?.totalConsumption !== undefined && price) {
-      account.balance.totalConsumption = Number((account.balance.totalConsumption + price.amount).toFixed(10));
-      publish(account);
-    }
-    if (!account.active && account.refreshRequested) void refresh(account).catch(() => {});
+    account.epoch++;
+    account.refreshRequested = true;
+    void refresh(account).catch(() => {});
   };
-  try {
-    provider.signal?.throwIfAborted();
-    const query = request ? getProviderPrice(provider, request).catch(() => null) : Promise.resolve(null);
-    // 单次生成取消只结束自己的等待，共享报价继续供其他生成使用。
-    price = await waitForQuery(query, provider.signal);
-    provider.signal?.throwIfAborted();
-    if (price && account.balance?.unit === price.unit) {
-      account.balance.balance = Number((account.balance.balance - price.amount).toFixed(10));
-      if (typeof account.balance.keyBalance === "number") account.balance.keyBalance = Number((account.balance.keyBalance - price.amount).toFixed(10));
-      deducted = true;
-      publish(account);
-    }
-    return finish;
-  } catch (error) {
-    finish(false);
-    throw error;
-  }
 }
 
 export function connectBalanceEvents(ids: string | string[], response: Response) {

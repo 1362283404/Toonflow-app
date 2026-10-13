@@ -18,7 +18,7 @@
               <el-button class="iconButton" text :icon="IconPlus" :disabled="pickerBusy || editingId !== null || folderDraft !== null" title="新增画布" aria-label="新增画布" @click="handleAddCanvas" />
             </div>
             <el-scrollbar v-loading="loadingTree" maxHeight="min(440px, calc(100dvh - 198px))">
-              <el-tree ref="canvasTree" class="canvasTree" :data="treeEntries" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="activeCanvasId" :filterNodeMethod="filterEntry" defaultExpandAll highlightCurrent emptyText="" @nodeClick="selectEntry">
+              <el-tree v-if="canvasListVisible" ref="canvasTree" class="canvasTree" :data="treeEntries" nodeKey="path" :props="{ label: 'name', isLeaf: entry => entry.type === 'file' || entry.draft || entry.empty === true }" lazy :load="loadTreeNode" :defaultExpandedKeys="expandedFolders" :autoExpandParent="false" :icon="IconChevronRight" :currentNodeKey="activeCanvasId" :filterNodeMethod="filterEntry" highlightCurrent emptyText="" @nodeClick="selectEntry" @nodeExpand="expandFolder" @nodeCollapse="collapseFolder">
                 <template #default="{ data, node }">
                   <div class="canvasEntry" :title="data.path" @contextmenu="openItemMenu($event, data)">
                     <component v-if="data.type === 'directory'" :is="node.expanded && !node.isLeaf ? IconFolderOpen : IconFolder" class="folderIcon" :size="18" aria-hidden="true" />
@@ -82,9 +82,9 @@
 <script setup lang="ts">
 import axios from "axios";
 import { locale, translate } from "@toonflow/i18n/vue";
-import { computed, inject, nextTick, ref, shallowRef, watch, type ShallowRef } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, watch, type ShallowRef } from "vue";
 import { Panel, useVueFlow, type FlowExportObject } from "@vue-flow/core";
-import { ElMessage, ElMessageBox, type DropdownInstance, type FilterNodeMethodFunction, type InputInstance, type TreeInstance } from "element-plus";
+import { ElMessage, ElMessageBox, type DropdownInstance, type FilterNodeMethodFunction, type InputInstance, type LoadFunction, type TreeInstance } from "element-plus";
 import { IconVector, IconCheck, IconChevronDown, IconChevronUp, IconChevronRight, IconDots, IconFolder, IconFolderOpen, IconFolderPlus, IconPlus, IconSearch } from "@tabler/icons-vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import useWorkspaceFiles from "@/lib/workspaceFiles";
@@ -127,6 +127,7 @@ watch(canvases, () => {
 const canvasListVisible = ref(false);
 const activeCanvasName = computed(() => canvases.value.find(canvas => canvas.id === activeCanvasId.value)?.name || translate("选择画布"));
 const busy = ref(false);
+const initialized = ref(false);
 const loadError = ref("");
 const editingId = ref<string | null>(null);
 const newCanvasId = ref<string | null>(null);
@@ -135,7 +136,11 @@ const canvasName = ref("");
 const renameError = ref("");
 const { toObject, setNodes, setEdges, setViewport } = useVueFlow();
 type CanvasEntry = { path: string; name: string; type: "file" | "directory"; children?: CanvasEntry[]; empty?: boolean; draft?: boolean };
-const folders = shallowRef<CanvasEntry[]>([]);
+const folders = inject<ShallowRef<CanvasEntry[]>>("canvasFolders", shallowRef<CanvasEntry[]>([]));
+const loadedDirectories = inject<ShallowRef<string[]>>("canvasLoadedDirectories", shallowRef<string[]>([]));
+const expandedFolders = ref<string[]>([]);
+const pendingDirectories = new Map<string, Promise<void>>();
+let treeController = new AbortController();
 const canvasTree = ref<TreeInstance>();
 const canvasPicker = ref<HTMLElement>();
 const searchQuery = ref("");
@@ -174,8 +179,87 @@ function parentPath(path: string) { return path.slice(0, path.lastIndexOf("/") +
 const filterEntry: FilterNodeMethodFunction = (query: string, entry) => !!entry.draft || String(entry.path).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 watch([searchQuery, treeEntries], async () => { await nextTick(); canvasTree.value?.filter(searchQuery.value); });
 watch(canvasListVisible, opened => {
-  if (opened) refreshTree().catch(error => { renameError.value = errorMessage(error, "读取画布失败"); });
-  else { treeRequest++; loadingTree.value = false; itemMenu.value?.handleClose(); cancelFolder(); }
+  if (!opened) { treeRequest++; loadingTree.value = false; itemMenu.value?.handleClose(); cancelFolder(); }
+});
+onBeforeUnmount(() => treeController.abort());
+
+function treeChildren(path: string): CanvasEntry[] {
+  let entries = treeEntries.value;
+  if (!path) return entries;
+  let current = "";
+  for (const name of path.split("/")) {
+    current = current ? `${current}/${name}` : name;
+    entries = entries.find(entry => entry.path === current)?.children ?? [];
+  }
+  return entries;
+}
+
+function mergeCanvases(loaded: Canvas[]) {
+  const known = new Set(canvases.value.map(canvas => canvas.id));
+  const added = loaded.filter(canvas => !known.has(canvas.id));
+  if (added.length) canvases.value = [...canvases.value, ...added];
+}
+
+async function loadDirectory(path: string) {
+  if (loadedDirectories.value.includes(path)) return;
+  const pending = pendingDirectories.get(path);
+  if (pending) return pending;
+  const directory = props.directory;
+  if (!directory) return;
+  const signal = treeController.signal;
+  const task = (async () => {
+    const loaded = await listCanvases(directory, path, false, signal);
+    checkCanvasDirectory(directory, signal);
+    const names = new Set(loaded.folders.map(folder => folder.path));
+    const removed = folders.value.filter(folder => parentPath(folder.path) === path && !names.has(folder.path)).map(folder => folder.path);
+    loadedDirectories.value = [...loadedDirectories.value.filter(value => !removed.some(folder => value === folder || value.startsWith(`${folder}/`))), path];
+    folders.value = [...folders.value.filter(folder => parentPath(folder.path) !== path && !removed.some(value => folder.path.startsWith(`${value}/`)))
+      .map(folder => folder.path === path ? { ...folder, empty: loaded.empty } : folder), ...loaded.folders];
+    mergeCanvases(loaded.canvases);
+  })();
+  pendingDirectories.set(path, task);
+  try { await task; }
+  finally { if (pendingDirectories.get(path) === task) pendingDirectories.delete(path); }
+}
+
+const loadTreeNode: LoadFunction = (node, resolve, reject) => {
+  const path = node.level === 0 ? "" : String(node.data.path);
+  if (node.level === 0) { resolve(treeChildren(path)); return; }
+  if (!expandedFolders.value.includes(path)) expandedFolders.value.push(path);
+  if (loadedDirectories.value.includes(path)) { resolve(treeChildren(path)); return; }
+  void loadDirectory(path).then(() => resolve(treeChildren(path))).catch(error => {
+    reject();
+    expandedFolders.value = expandedFolders.value.filter(value => value !== path);
+    if (!axios.isCancel(error) && !(error instanceof Error && error.name === "AbortError")) renameError.value = errorMessage(error, "读取文件夹失败");
+  });
+};
+
+function collapseFolder(entry: CanvasEntry) {
+  expandedFolders.value = expandedFolders.value.filter(path => path !== entry.path && !path.startsWith(`${entry.path}/`));
+}
+
+function expandFolder(entry: CanvasEntry) {
+  if (!expandedFolders.value.includes(entry.path)) expandedFolders.value.push(entry.path);
+}
+
+watch(searchQuery, (query, _previous, onCleanup) => {
+  if (!query.trim()) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => { void getCanvases(controller.signal).catch(error => {
+    if (!controller.signal.aborted) renameError.value = errorMessage(error, "搜索画布失败");
+  }); }, 250);
+  onCleanup(() => { clearTimeout(timer); controller.abort(); });
+});
+
+watch(moveVisible, (visible, _previous, onCleanup) => {
+  if (!visible || !props.directory) return;
+  const directory = props.directory;
+  const controller = new AbortController();
+  onCleanup(() => controller.abort());
+  void listCanvasEntries(directory, "", true, controller.signal).then(loaded => {
+    checkCanvasDirectory(directory, controller.signal);
+    folders.value = loaded.folders;
+  }).catch(error => { if (!controller.signal.aborted) renameError.value = errorMessage(error, "读取移动目录失败"); });
 });
 
 async function refreshTree() {
@@ -184,10 +268,11 @@ async function refreshTree() {
   const request = ++treeRequest;
   loadingTree.value = true;
   try {
-    const loaded = await listCanvasEntries(directory);
-    if (request !== treeRequest || directory !== props.directory) return;
-    // 共享画布列表由文件操作更新；目录扫描不能覆盖列表并卸载正在移动或生成的画布。
-    folders.value = loaded.folders;
+    treeController.abort();
+    treeController = new AbortController();
+    pendingDirectories.clear();
+    loadedDirectories.value = [];
+    await loadDirectory("");
   } catch (error) {
     if (request !== treeRequest || directory !== props.directory) return;
     throw error;
@@ -200,11 +285,17 @@ function selectEntry(entry: CanvasEntry) {
 
 watch(() => props.directory, async (directory, _previous, onCleanup) => {
   let cancelled = false;
-  onCleanup(() => { cancelled = true; });
+  treeController.abort();
+  treeController = new AbortController();
+  const controller = treeController;
+  onCleanup(() => { cancelled = true; controller.abort(); });
+  pendingDirectories.clear();
+  expandedFolders.value = [];
+  initialized.value = false;
   busy.value = true;
   loadError.value = "";
   treeRequest++;
-  folders.value = [];
+  if (props.initialCanvasId === undefined) { folders.value = []; loadedDirectories.value = []; }
   folderDraft.value = null;
   searchQuery.value = "";
   boundCanvas.value = undefined;
@@ -220,16 +311,16 @@ watch(() => props.directory, async (directory, _previous, onCleanup) => {
       await applyCanvas(props.initialCanvasId, directory);
       return;
     }
-    let entries = await listCanvases(directory);
+    let entries = await listCanvases(directory, "", false, controller.signal);
     let loaded = entries.canvases;
     if (cancelled) return;
-    if (!loaded.length) {
+    if (!loaded.length && !entries.folders.length) {
       try {
         loaded = [await createCanvasFile(directory, "画布1")];
       } catch (err) {
         if (!axios.isAxiosError<{ data?: { code?: string } }>(err) || err.response?.status !== 409 || err.response.data.data?.code !== "EEXIST") throw err;
         // 同时打开工作区时，读取另一请求刚创建的默认画布，不覆盖同名文件。
-        entries = await listCanvases(directory);
+        entries = await listCanvases(directory, "", false, controller.signal);
         const refreshed = entries.canvases;
         // 画布1.json 若被其他 JSON 占用，则使用下一个空闲名称，保留原文件。
         loaded = refreshed.length ? refreshed : [await createCanvasFile(directory)];
@@ -237,6 +328,7 @@ watch(() => props.directory, async (directory, _previous, onCleanup) => {
     }
     if (cancelled) return;
     folders.value = entries.folders;
+    loadedDirectories.value = [""];
     canvases.value = loaded;
     if (canvases.value[0]) await applyCanvas(canvases.value[0].id, directory);
   } catch (err) {
@@ -245,7 +337,7 @@ watch(() => props.directory, async (directory, _previous, onCleanup) => {
       if (!props.initialCanvasId) ElMessage.error(loadError.value);
     }
   } finally {
-    if (!cancelled) busy.value = false;
+    if (!cancelled) { busy.value = false; initialized.value = true; }
   }
 }, { immediate: true });
 
@@ -253,8 +345,19 @@ function errorMessage(err: unknown, fallback: string) {
   return axios.isAxiosError<{ message?: string }>(err) ? err.response?.data.message || fallback : err instanceof Error ? err.message : fallback;
 }
 
-function getCanvases() {
+function peekCanvases() {
   return canvases.value.map(({ id, name }) => ({ id, name }));
+}
+
+async function getCanvases(signal?: AbortSignal) {
+  const directory = getCanvasDirectory(signal);
+  const callSignal = AbortSignal.any([treeController.signal, ...(signal ? [signal] : [])]);
+  const loaded = await listCanvases(directory, "", true, callSignal);
+  checkCanvasDirectory(directory, callSignal);
+  loadedDirectories.value = ["", ...loaded.folders.map(folder => folder.path)];
+  folders.value = loaded.folders;
+  mergeCanvases(loaded.canvases);
+  return loaded.canvases.map(({ id, name }) => ({ id, name }));
 }
 
 function getCanvasDirectory(signal?: AbortSignal) {
@@ -365,7 +468,7 @@ async function removeCanvas(canvas: Canvas) {
     if (performFileAction) await performFileAction(directory, "delete", id);
     await props.flushSave(async () => {
       checkCanvasDirectory(directory);
-      const retainedNodes = (await Promise.all((await listCanvases(directory)).canvases.map(canvas => readNodes(canvas.id)))).flat();
+      const retainedNodes = (await Promise.all((await listCanvases(directory, "", true)).canvases.map(canvas => readNodes(canvas.id)))).flat();
       const assetDirectories = getCanvasAssetDirectories(removedNodes, retainedNodes);
       checkCanvasDirectory(directory);
       const results = await Promise.allSettled(assetDirectories.map(path => files.remove(path, true).catch(error => {
@@ -399,32 +502,37 @@ async function createCanvasFile(directory: string, name?: string, signal?: Abort
   }
 }
 
-async function listCanvasEntries(directory: string) {
+async function listCanvasEntries(directory: string, path = "", recursive = false, signal?: AbortSignal) {
   const files = useWorkspaceFiles(directory);
-  const { entries } = await files.list();
+  const { entries, empty } = await files.list(path, signal);
   const folders: CanvasEntry[] = [];
-  // 文件接口只返回普通文件和目录，不跟随符号链接；素材和 Agent 目录不参与画布扫描。
+  // ACT: 初始化与展开只读当前一层；完整查询仅由搜索、Agent 列举及文件操作显式触发。
   for (let index = 0; index < entries.length; index++) {
-    checkCanvasDirectory(directory);
+    checkCanvasDirectory(directory, signal);
     const entry = entries[index]!;
     if (entry.type !== "directory" || ["assets", ".agent"].includes(entry.name.toLowerCase())) continue;
-    const children = await files.list(entry.path);
-    folders.push({ ...entry, empty: children.empty });
-    entries.push(...children.entries);
+    const folder: CanvasEntry = { ...entry };
+    folders.push(folder);
+    if (recursive) {
+      const children = await files.list(entry.path, signal);
+      folder.empty = children.empty;
+      entries.push(...children.entries);
+    }
   }
-  return { entries, folders: folders.sort((left, right) => left.path.localeCompare(right.path, "zh-CN", { numeric: true })) };
+  return { entries, empty, folders: folders.sort((left, right) => left.path.localeCompare(right.path, "zh-CN", { numeric: true })) };
 }
 
-async function listCanvases(directory: string): Promise<{ canvases: Canvas[]; folders: CanvasEntry[] }> {
+async function listCanvases(directory: string, path = "", recursive = false, signal?: AbortSignal) {
   const files = useWorkspaceFiles(directory);
-  const { entries, folders } = await listCanvasEntries(directory);
+  const { entries, folders, empty } = await listCanvasEntries(directory, path, recursive, signal);
   const loaded = await Promise.all(entries.filter(entry => entry.type === "file" && /\.json$/i.test(entry.name)).map(async entry => {
-    if (!(await isCanvasFile(files, entry.path))) return null;
+    if (!(await isCanvasFile(files, entry.path, signal))) return null;
     return { id: entry.path, name: entry.name.slice(0, -5) };
   }));
   return {
     canvases: loaded.filter(canvas => canvas !== null).sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true })),
     folders,
+    empty,
   };
 }
 
@@ -699,7 +807,7 @@ function syncDocumentNode(canvasId: string, nodeId: string, handleId: string, te
   else if (inline) (data.outputs ??= {})[handleId] = { dataType: "STRING", value: text };
 }
 
-defineExpose({ getCanvases, addCanvas, switchCanvas, renameCanvas, syncCanvasPath, syncDocumentNode, loadError });
+defineExpose({ getCanvases, peekCanvases, initialized, addCanvas, switchCanvas, renameCanvas, syncCanvasPath, syncDocumentNode, loadError });
 </script>
 
 <style lang="scss" scoped>
