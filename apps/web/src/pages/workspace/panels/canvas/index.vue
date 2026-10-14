@@ -11,6 +11,7 @@
     @gestureend.capture="zoomCanvas"
     @pointerdown.capture="updateCanvasSelection"
     @click.capture="updateCanvasSelection"
+    @auxclick.capture="preventMiddleClick"
     @pointermove="pointerPosition = { x: $event.clientX, y: $event.clientY }; if (!$event.buttons) updateCanvasSelection($event)"
     @pointerleave="pointerPosition = undefined"
     @dragover="dragFilesOver"
@@ -933,6 +934,10 @@ function zoomCanvas(event: WheelEvent | (Event & { scale: number })) {
   if (!bounds) return;
   point ??= { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
   selection.call<[number, [number, number], Event]>(zoom.scaleBy, factor, [point.x - bounds.left, point.y - bounds.top], event);
+}
+
+function preventMiddleClick(event: MouseEvent) {
+  if (event.button === 1) event.preventDefault();
 }
 
 function updateCanvasSelection(event: MouseEvent | KeyboardEvent) {
