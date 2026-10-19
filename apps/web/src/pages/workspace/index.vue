@@ -145,7 +145,18 @@ const documentPanel = defineAsyncComponent(() => import("./panels/document/index
 
 const activePanel = ref<"canvas" | "document">("canvas");
 const selectedTool = ref<"move" | "hand">("move");
-onMounted(() => anonymousData.track("workspace.canvas"));
+const sideButtonEvents = ["mousedown", "mouseup", "auxclick"] as const;
+// 鼠标侧键会直接触发原生历史导航，需在 DOM 事件阶段拦截，避免生成中的工作区被误关闭。
+function preventSideButtonNavigation(event: MouseEvent) {
+  if (event.button === 3 || event.button === 4) event.preventDefault();
+}
+onMounted(() => {
+  anonymousData.track("workspace.canvas");
+  for (const eventName of sideButtonEvents) window.addEventListener(eventName, preventSideButtonNavigation, true);
+});
+onScopeDispose(() => {
+  for (const eventName of sideButtonEvents) window.removeEventListener(eventName, preventSideButtonNavigation, true);
+});
 const workspaceStore = useWorkspaceStore();
 useProviderBalances();
 const panelOptions = [
